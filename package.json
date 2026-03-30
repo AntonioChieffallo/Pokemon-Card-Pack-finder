@@ -1,0 +1,27 @@
+{
+  "name": "pokemon-card-pack-finder",
+  "version": "1.0.0",
+  "description": "This is to scrape the internet to see good prices, where to look, and click a link straight to the good stuff, if it is cards, packs, or boxes!",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tests/server.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AntonioChieffallo/Pokemon-Card-Pack-finder.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/AntonioChieffallo/Pokemon-Card-Pack-finder/issues"
+  },
+  "homepage": "https://github.com/AntonioChieffallo/Pokemon-Card-Pack-finder#readme",
+  "dependencies": {
+    "axios": "^1.14.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1"
+  }
+}
