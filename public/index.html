@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pokémon Card Pack Finder – Price Comparison</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!-- Chart.js from CDN (no sensitive data sent) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <img src="https://raw.githubusercontent.com/AntonioChieffallo/Pokemon-Card-Pack-finder/copilot/scrape-pokemon-cards-pricing/public/pokeball.svg"
+           alt="" class="header-logo" onerror="this.style.display='none'" />
+      <h1>Pokémon Card Pack Finder</h1>
+      <p class="tagline">Search cards, packs &amp; boxes — compare market prices at a glance</p>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- Search bar -->
+    <section class="search-section" aria-label="Search">
+      <form id="searchForm" class="search-form" autocomplete="off">
+        <div class="type-tabs" role="tablist" aria-label="Search type">
+          <button type="button" class="tab-btn active" data-type="cards" role="tab" aria-selected="true">Cards</button>
+          <button type="button" class="tab-btn" data-type="packs" role="tab" aria-selected="false">Packs</button>
+          <button type="button" class="tab-btn" data-type="boxes" role="tab" aria-selected="false">Boxes</button>
+        </div>
+        <div class="search-row">
+          <input
+            id="searchInput"
+            type="search"
+            placeholder="e.g. Charizard, Base Set, Scarlet &amp; Violet…"
+            aria-label="Search query"
+            required
+          />
+          <button type="submit" class="btn-primary">Search</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Status / loading -->
+    <div id="statusMsg" class="status-msg" role="status" aria-live="polite" hidden></div>
+
+    <!-- Results grid -->
+    <section id="resultsSection" hidden aria-label="Search results">
+      <div class="results-header">
+        <h2 id="resultsTitle">Results</h2>
+        <span id="resultsCount" class="results-count"></span>
+      </div>
+      <div id="resultsGrid" class="results-grid"></div>
+    </section>
+
+    <!-- Price chart section -->
+    <section id="chartSection" class="chart-section" hidden aria-label="Price comparison chart">
+      <h2 id="chartTitle">Price Comparison Chart</h2>
+      <p id="chartSubtitle" class="chart-subtitle"></p>
+      <div class="chart-wrapper">
+        <canvas id="priceChart" role="img" aria-label="Bar chart comparing prices"></canvas>
+      </div>
+    </section>
+
+    <!-- Deal summary -->
+    <section id="dealSection" class="deal-section" hidden aria-label="Deal summary">
+      <h2>Deal Summary</h2>
+      <div id="dealGrid" class="deal-grid"></div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <p>Price data sourced via <a href="https://pokemontcg.io/" target="_blank" rel="noopener noreferrer">Pokémon TCG API</a> (TCGPlayer market prices).
+       MSRP references are approximate. Always verify before purchasing.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
