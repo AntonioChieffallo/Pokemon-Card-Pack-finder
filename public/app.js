@@ -9,13 +9,21 @@ let sourceHydrationToken = 0;
 let detailChart = null;
 let suggestionMode = 'filtered';
 const SUGGESTION_DEBOUNCE_MS = 90;
+const SEARCH_CACHE = new Map(); // Cache recent searches
+const CACHE_TTL_MS = 1800000; // 30 minutes
+let lastSearchQuery = '';
+let lastSearchType = '';
+let allSearchResults = []; // Full result set from latest search
+let chartDeferralId = null; // Track deferred chart rendering
 const fullSuggestionCache = {
   cards: null,
+  packcards: null,
   packs: null,
   boxes: null,
 };
 const fullSuggestionInFlight = {
   cards: null,
+  packcards: null,
   packs: null,
   boxes: null,
 };
@@ -74,6 +82,7 @@ document.querySelectorAll('.tab-btn').forEach((btn) => {
 
 function placeholderFor(type) {
   if (type === 'cards') return 'e.g. Charizard, Charizard #4, Pikachu 58/102…';
+  if (type === 'packcards') return 'e.g. Obsidian Flames, 151, Base Set…';
   if (type === 'packs') return 'e.g. Base Set, Scarlet & Violet, Obsidian Flames…';
   return 'e.g. Temporal Forces, Paldea Evolved…';
 }
@@ -173,6 +182,15 @@ document.addEventListener('keydown', (e) => {
 /* ── Core search ──────────────────────────────────────────────────────────── */
 async function performSearch(query, type) {
   clearResults();
+  const cacheKey = `${type}::${query}`;
+  const cached = SEARCH_CACHE.get(cacheKey);
+  
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    // Use cached results - instant display
+    renderFromCache(cached.data, query, type);
+    return;
+  }
+  
   showStatus('<span class="spinner"></span>Searching…', false);
 
   try {
@@ -181,17 +199,47 @@ async function performSearch(query, type) {
       const resp = await fetch(`/api/cards?q=${encodeURIComponent(query)}`);
       if (!resp.ok) throw new Error(`Server error ${resp.status}`);
       data = await resp.json();
+      allSearchResults = data.results || [];
+      lastSearchQuery = query;
+      lastSearchType = type;
+      SEARCH_CACHE.set(cacheKey, { data, timestamp: Date.now() });
       renderCards(data.results || [], query);
+    } else if (type === 'packcards') {
+      const resp = await fetch(`/api/pack-cards?q=${encodeURIComponent(query)}`);
+      if (!resp.ok) throw new Error(`Server error ${resp.status}`);
+      data = await resp.json();
+      allSearchResults = data.results || [];
+      lastSearchQuery = query;
+      lastSearchType = type;
+      SEARCH_CACHE.set(cacheKey, { data, timestamp: Date.now() });
+      renderPackCards(data.results || [], query, data.setName || query);
     } else {
       // packs and boxes both search sets; boxes show multi-pack deals
       const resp = await fetch(`/api/sets?q=${encodeURIComponent(query)}`);
       if (!resp.ok) throw new Error(`Server error ${resp.status}`);
       data = await resp.json();
+      allSearchResults = data.results || [];
+      lastSearchQuery = query;
+      lastSearchType = type;
+      SEARCH_CACHE.set(cacheKey, { data, timestamp: Date.now() });
       renderSets(data.results || [], query, type);
     }
   } catch (err) {
     showStatus(`Error: ${err.message}`, true);
   }
+}
+
+function renderFromCache(data, query, type) {
+  hideStatus();
+  if (type === 'cards') {
+    renderCards(data.results || [], query);
+  } else if (type === 'packcards') {
+    renderPackCards(data.results || [], query, data.setName || query);
+  } else {
+    renderSets(data.results || [], query, type);
+  }
+  showStatus('Cached results', false);
+  setTimeout(() => hideStatus(), 1500);
 }
 
 /* ── Search autocomplete ──────────────────────────────────────────────────── */
@@ -249,6 +297,7 @@ function prefetchTypeSuggestions(type) {
 function prefetchAllSuggestions() {
   const run = () => {
     prefetchTypeSuggestions('cards').catch(() => {});
+    prefetchTypeSuggestions('packcards').catch(() => {});
     prefetchTypeSuggestions('packs').catch(() => {});
     prefetchTypeSuggestions('boxes').catch(() => {});
   };
@@ -285,6 +334,18 @@ async function fetchSuggestionsRemote(query, type) {
         data.results,
         (card) => card.name,
         (card) => (card.set ? card.set.name : ''),
+        10
+      );
+    }
+
+    if (type === 'packcards') {
+      const resp = await fetch(`/api/sets?q=${encodeURIComponent(query)}`);
+      if (!resp.ok) return [];
+      const data = await resp.json();
+      return mapUniqueOptions(
+        data.results,
+        (set) => set.name,
+        (set) => set.series || '',
         10
       );
     }
@@ -391,8 +452,41 @@ function renderCards(cards, query) {
   });
 
   showSection(resultsSection);
-  buildCardChart(cards, query);
-  buildDealSummary(cards);
+  
+  // Defer chart and deal rendering for instant grid display
+  if (chartDeferralId) clearTimeout(chartDeferralId);
+  chartDeferralId = setTimeout(() => {
+    buildCardChart(cards, query);
+    buildDealSummary(cards);
+  }, 150);
+}
+
+function renderPackCards(cards, query, setName) {
+  hideStatus();
+  resultsGrid.classList.remove('sets-grid');
+  resultsGrid.classList.add('cards-grid');
+
+  if (!cards.length) {
+    showStatus(`No pack cards found for "${query}". Try a different set name.`, false);
+    return;
+  }
+
+  resultsTitle.textContent = `Pack Cards – ${setName}`;
+  resultsCount.textContent = `${cards.length} card${cards.length !== 1 ? 's' : ''} found`;
+
+  cards.forEach((card) => {
+    const el = buildCardEl(card);
+    resultsGrid.appendChild(el);
+  });
+
+  showSection(resultsSection);
+  
+  // Defer chart and deal rendering for instant grid display
+  if (chartDeferralId) clearTimeout(chartDeferralId);
+  chartDeferralId = setTimeout(() => {
+    buildCardChart(cards, setName || query);
+    buildDealSummary(cards);
+  }, 150);
 }
 
 function buildCardEl(card) {
@@ -422,18 +516,13 @@ function buildCardEl(card) {
       <span class="card-rarity">${escHtml(card.rarity)}</span>
       <div class="price-block">
         ${p ? `
-        <div class="price-row"><span class="price-label">Market (${escHtml(primaryVariant)})</span><span class="price-value market">${fmt(p.market)}</span></div>
+        <div class="price-row"><span class="price-label">Avg (Market ${escHtml(primaryVariant)})</span><span class="price-value market">${fmt(p.market)}</span></div>
         <div class="price-row"><span class="price-label">Low</span><span class="price-value">${fmt(p.low)}</span></div>
         <div class="price-row"><span class="price-label">Mid</span><span class="price-value">${fmt(p.mid)}</span></div>
         <div class="price-row"><span class="price-label">High</span><span class="price-value">${fmt(p.high)}</span></div>
         ` : `<div class="price-row"><span class="price-label">Price data unavailable</span></div>`}
       </div>
       ${deal ? dealBadgeHtml(deal) : ''}
-      ${buildProductLinksHtml({
-        title: card.name,
-        typeLabel: 'card',
-        primaryUrl: card.url || '',
-      })}
     </div>
   `;
   return div;
@@ -459,11 +548,17 @@ function renderSets(sets, query, type) {
     resultsGrid.appendChild(el);
   });
 
-  hydrateSetSourcePrices();
+  // Skip auto-hydration on grid for performance; only scrape when modal is opened
+  // hydrateSetSourcePrices();
 
   showSection(resultsSection);
-  buildSetChart(sets, query, isBox);
-  buildSetDealSummary(sets, isBox);
+  
+  // Defer chart and deal rendering for instant grid display
+  if (chartDeferralId) clearTimeout(chartDeferralId);
+  chartDeferralId = setTimeout(() => {
+    buildSetChart(sets, query, isBox);
+    buildSetDealSummary(sets, isBox);
+  }, 150);
 }
 
 function buildSetEl(set, isBox) {
@@ -546,7 +641,10 @@ async function hydrateSetSourcePrices() {
     if (!query) return;
 
     try {
-      const resp = await fetch(`/api/market-prices?name=${encodeURIComponent(query)}&kind=${encodeURIComponent(kind)}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout per request
+      const resp = await fetch(`/api/market-prices?name=${encodeURIComponent(query)}&kind=${encodeURIComponent(kind)}`, { signal: controller.signal });
+      clearTimeout(timeoutId);
       if (!resp.ok) return;
       const data = await resp.json();
       if (token !== sourceHydrationToken) return;
@@ -626,7 +724,7 @@ function openSetDetail(set, isBox) {
   ].join('');
 
   detailLinks.innerHTML = buildSetSourcesHtml(set, isBox, listedPrice);
-  hydrateSetSourcePrices();
+  hydrateSetSourcePrices(); // Only scrape when user opens modal detail
 
   renderDetailChart({
     labels: ['Current Est.', 'MSRP'],
@@ -773,13 +871,13 @@ function dealBadgeHtml(deal) {
 
 /* ── Charts ───────────────────────────────────────────────────────────────── */
 function buildCardChart(cards, query) {
-  // Use the primary variant market / low / high prices
+  // Use the primary variant market / low / high prices - limit to first 12 for performance
   const labels = [];
   const marketData = [];
   const lowData    = [];
   const highData   = [];
 
-  cards.forEach((card) => {
+  cards.slice(0, 12).forEach((card) => {
     const variants = Object.keys(card.prices);
     if (!variants.length) return;
     const pv = variants.includes('holofoil') ? 'holofoil' : variants.includes('normal') ? 'normal' : variants[0];
@@ -793,7 +891,7 @@ function buildCardChart(cards, query) {
 
   if (!labels.length) return;
 
-  chartTitle.textContent    = `Price Comparison – "${query}" Cards`;
+  chartTitle.textContent    = `Price Comparison – "${query}" Cards${cards.length > 12 ? ` (showing top 12 of ${cards.length})` : ''}`;
   chartSubtitle.textContent = 'TCGPlayer market, low, and high prices (USD)';
   renderChart(labels, marketData, lowData, highData);
 }
@@ -803,7 +901,7 @@ function buildSetChart(sets, query, isBox) {
   const listedData  = [];
   const msrpData    = [];
 
-  sets.forEach((set) => {
+  sets.slice(0, 12).forEach((set) => {
     const listed = isBox ? estimateBoxPrice(set) : estimatePackPrice(set);
     const msrp   = isBox ? set.msrpBox : set.msrpPack;
     if (listed == null) return;
@@ -814,7 +912,7 @@ function buildSetChart(sets, query, isBox) {
 
   if (!labels.length) return;
 
-  chartTitle.textContent    = `Price Comparison – "${query}" ${isBox ? 'Boxes' : 'Packs'}`;
+  chartTitle.textContent    = `Price Comparison – "${query}" ${isBox ? 'Boxes' : 'Packs'}${sets.length > 12 ? ` (showing top 12 of ${sets.length})` : ''}`;
   chartSubtitle.textContent = 'Estimated secondary market price vs MSRP (USD)';
 
   const ctx = document.getElementById('priceChart').getContext('2d');
@@ -941,7 +1039,7 @@ function buildDealSummary(cards) {
 
   items.sort((a, b) => a.deal.pct - b.deal.pct); // best deals first
 
-  items.forEach((item) => {
+  items.slice(0, 10).forEach((item) => {
     const div = document.createElement('div');
     div.className = 'deal-item';
     div.innerHTML = `
@@ -971,7 +1069,7 @@ function buildSetDealSummary(sets, isBox) {
 
   items.sort((a, b) => a.deal.pct - b.deal.pct);
 
-  items.forEach((item) => {
+  items.slice(0, 10).forEach((item) => {
     const div = document.createElement('div');
     div.className = 'deal-item';
     div.innerHTML = `

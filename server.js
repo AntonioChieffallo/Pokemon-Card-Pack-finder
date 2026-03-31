@@ -188,33 +188,65 @@ app.get('/api/cards', async (req, res) => {
       params: {
         q: cardQuery,
         orderBy: '-set.releaseDate',
-        pageSize: 20,
+        pageSize: 10,
         select: 'id,name,number,set,images,tcgplayer,rarity,supertype,subtypes',
       },
     });
 
-    const cards = (response.data.data || []).map((card) => {
-      const prices = extractCardPrices(card);
-      return {
-        id: card.id,
-        name: card.name,
-        number: card.number || null,
-        set: card.set ? { id: card.set.id, name: card.set.name, series: card.set.series } : null,
-        rarity: card.rarity || 'Unknown',
-        supertype: card.supertype || 'Pokémon',
-        subtypes: card.subtypes || [],
-        image: card.images ? card.images.small : null,
-        imageLarge: card.images ? card.images.large : null,
-        url: card.tcgplayer ? card.tcgplayer.url : null,
-        updatedAt: card.tcgplayer ? card.tcgplayer.updatedAt : null,
-        prices,
-      };
-    });
+    const cards = (response.data.data || []).map((card) => mapCard(card));
 
     res.json({ results: cards, total: response.data.totalCount || cards.length });
   } catch (err) {
     console.error('Cards API error:', err.message);
     res.status(500).json({ error: 'Failed to fetch card data' });
+  }
+});
+
+// Search cards for a set query (pack cards)
+app.get('/api/pack-cards', async (req, res) => {
+  const { q } = req.query;
+  if (!q) return res.status(400).json({ error: 'Query parameter "q" is required' });
+
+  const nameQuery = buildNameQuery(q);
+  if (!nameQuery) return res.status(400).json({ error: 'Query parameter "q" is required' });
+
+  try {
+    const setResponse = await axios.get(`${POKEMON_TCG_API}/sets`, {
+      headers: buildHeaders(),
+      params: {
+        q: nameQuery,
+        orderBy: '-releaseDate',
+        pageSize: 15,
+        select: 'id,name,series,releaseDate',
+      },
+    });
+
+    const selectedSet = pickBestSetMatch(setResponse.data.data || [], q);
+    if (!selectedSet) {
+      return res.json({ results: [], total: 0, setName: null, setId: null, setSeries: null });
+    }
+
+    const cardsResponse = await axios.get(`${POKEMON_TCG_API}/cards`, {
+      headers: buildHeaders(),
+      params: {
+        q: `set.id:${selectedSet.id}`,
+        orderBy: 'number',
+        pageSize: 200,
+        select: 'id,name,number,set,images,tcgplayer,rarity,supertype,subtypes',
+      },
+    });
+
+    const cards = (cardsResponse.data.data || []).map((card) => mapCard(card));
+    return res.json({
+      results: cards,
+      total: cardsResponse.data.totalCount || cards.length,
+      setName: selectedSet.name,
+      setId: selectedSet.id,
+      setSeries: selectedSet.series || null,
+    });
+  } catch (err) {
+    console.error('Pack cards API error:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch pack cards data' });
   }
 });
 
@@ -232,7 +264,7 @@ app.get('/api/sets', async (req, res) => {
       params: {
         q: nameQuery,
         orderBy: '-releaseDate',
-        pageSize: 20,
+        pageSize: 8,
         select: 'id,name,series,total,releaseDate,images,tcgplayer',
       },
     });
@@ -308,6 +340,36 @@ function extractCardPrices(card) {
   return result;
 }
 
+function mapCard(card) {
+  const prices = extractCardPrices(card);
+  return {
+    id: card.id,
+    name: card.name,
+    number: card.number || null,
+    set: card.set ? { id: card.set.id, name: card.set.name, series: card.set.series } : null,
+    rarity: card.rarity || 'Unknown',
+    supertype: card.supertype || 'Pokémon',
+    subtypes: card.subtypes || [],
+    image: card.images ? card.images.small : null,
+    imageLarge: card.images ? card.images.large : null,
+    url: card.tcgplayer ? card.tcgplayer.url : null,
+    updatedAt: card.tcgplayer ? card.tcgplayer.updatedAt : null,
+    prices,
+  };
+}
+
+function pickBestSetMatch(sets, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return sets && sets.length ? sets[0] : null;
+  const exact = (sets || []).find((set) => String(set.name || '').toLowerCase() === q);
+  if (exact) return exact;
+  const startsWith = (sets || []).find((set) => String(set.name || '').toLowerCase().startsWith(q));
+  if (startsWith) return startsWith;
+  const contains = (sets || []).find((set) => String(set.name || '').toLowerCase().includes(q));
+  if (contains) return contains;
+  return sets && sets.length ? sets[0] : null;
+}
+
 function mapSet(set) {
   // Estimate booster pack price from TCGPlayer data when available
   const packPrice = set.tcgplayer && set.tcgplayer.prices && set.tcgplayer.prices.boosterPack
@@ -335,8 +397,8 @@ function mapSet(set) {
 
 app.get('/api/suggestions', async (req, res) => {
   const type = String(req.query.type || '').toLowerCase();
-  if (!['cards', 'packs', 'boxes'].includes(type)) {
-    return res.status(400).json({ error: 'Query parameter "type" must be cards, packs, or boxes' });
+  if (!['cards', 'packcards', 'packs', 'boxes'].includes(type)) {
+    return res.status(400).json({ error: 'Query parameter "type" must be cards, packcards, packs, or boxes' });
   }
 
   try {
