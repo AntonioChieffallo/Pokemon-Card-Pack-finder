@@ -2,22 +2,253 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const cheerio = require('cheerio');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const POKEMON_TCG_API = 'https://api.pokemontcg.io/v2';
 const API_KEY = process.env.POKEMON_TCG_API_KEY || '';
+const ALERTS_FILE = path.join(__dirname, 'alert-subscriptions.json');
+const ALERT_CHECK_INTERVAL_MIN = Math.max(1, Number(process.env.ALERT_CHECK_INTERVAL_MIN || 15));
+const DEFAULT_EBAY_DEAL_RATIO = Number(process.env.ALERT_EBAY_DEAL_RATIO || 0.75);
+const ALERT_FROM_EMAIL = process.env.ALERT_FROM_EMAIL || process.env.SMTP_USER || 'alerts@pokemon-card-pack-finder.local';
+
+let alertSubscriptions = [];
+let alertCheckInProgress = false;
+let alertTransporter = null;
+let alertTransporterConfigured = false;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+const distPath = path.join(__dirname, 'dist');
+const distIndex = path.join(distPath, 'index.html');
+app.use(express.static(distPath));
 
 function buildHeaders() {
   const headers = { 'Content-Type': 'application/json' };
   if (API_KEY) headers['X-Api-Key'] = API_KEY;
   return headers;
+}
+
+function loadAlertSubscriptions() {
+  if (!fs.existsSync(ALERTS_FILE)) {
+    alertSubscriptions = [];
+    return;
+  }
+
+  try {
+    const raw = fs.readFileSync(ALERTS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    alertSubscriptions = Array.isArray(parsed) ? parsed : [];
+  } catch (_err) {
+    alertSubscriptions = [];
+  }
+}
+
+function saveAlertSubscriptions() {
+  try {
+    fs.writeFileSync(ALERTS_FILE, JSON.stringify(alertSubscriptions, null, 2));
+  } catch (err) {
+    console.error('Failed to save alert subscriptions:', err.message);
+  }
+}
+
+function normalizeItemType(type) {
+  const normalized = String(type || '').toLowerCase();
+  if (!['cards', 'packcards', 'packs', 'boxes'].includes(normalized)) return null;
+  return normalized;
+}
+
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isValidEmail(value) {
+  const email = normalizeEmail(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function kindForItemType(itemType) {
+  if (itemType === 'boxes') return 'box';
+  if (itemType === 'packs') return 'pack';
+  return 'card';
+}
+
+function searchQueryForKind(name, kind) {
+  const suffix = kind === 'box' ? 'pokemon booster box' : kind === 'pack' ? 'pokemon booster pack' : 'pokemon card';
+  return `${name} ${suffix}`;
+}
+
+function getAlertTransporter() {
+  if (alertTransporterConfigured) return alertTransporter;
+  alertTransporterConfigured = true;
+
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT || 0);
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const secure = String(process.env.SMTP_SECURE || '').toLowerCase() === 'true' || port === 465;
+
+  if (!host || !port || !user || !pass) {
+    console.warn('Alert emails are disabled: SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS not fully configured.');
+    alertTransporter = null;
+    return null;
+  }
+
+  alertTransporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+  });
+
+  return alertTransporter;
+}
+
+async function sendAvailabilityEmail(subscription, availability) {
+  const transporter = getAlertTransporter();
+  if (!transporter) return false;
+
+  const lines = availability.sources
+    .map((source) => `- ${source.label}: $${Number(source.price).toFixed(2)} (${source.url})`)
+    .join('\n');
+
+  const text = [
+    `Good news: ${subscription.itemName} appears to be back online.`,
+    '',
+    'Available sources:',
+    lines || '- No priced sources found',
+    '',
+    'You are receiving this because you subscribed for restock alerts.',
+  ].join('\n');
+
+  await transporter.sendMail({
+    from: ALERT_FROM_EMAIL,
+    to: subscription.email,
+    subject: `[Pokemon Alert] ${subscription.itemName} is back online`,
+    text,
+  });
+
+  return true;
+}
+
+async function getReferencePrice(itemName, itemType) {
+  try {
+    if (itemType === 'cards' || itemType === 'packcards') {
+      const cardQuery = buildCardQuery(itemName);
+      if (!cardQuery) return null;
+
+      const response = await axios.get(`${POKEMON_TCG_API}/cards`, {
+        headers: buildHeaders(),
+        params: {
+          q: cardQuery,
+          orderBy: '-set.releaseDate',
+          pageSize: 1,
+          select: 'tcgplayer',
+        },
+      });
+
+      const card = response.data.data && response.data.data[0];
+      if (!card || !card.tcgplayer || !card.tcgplayer.prices) return null;
+      const variants = Object.values(card.tcgplayer.prices);
+      for (const variant of variants) {
+        if (variant && typeof variant.market === 'number') return Number(variant.market);
+      }
+      return null;
+    }
+
+    const setQuery = buildNameQuery(itemName);
+    if (!setQuery) return null;
+    const response = await axios.get(`${POKEMON_TCG_API}/sets`, {
+      headers: buildHeaders(),
+      params: {
+        q: setQuery,
+        orderBy: '-releaseDate',
+        pageSize: 1,
+        select: 'tcgplayer',
+      },
+    });
+
+    const set = response.data.data && response.data.data[0];
+    if (!set) return null;
+
+    if (itemType === 'boxes') return 119.99;
+    return 4.99;
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function fetchAvailability(itemName, itemType, includeEbay, ebayDealRatio) {
+  const kind = kindForItemType(itemType);
+  const query = searchQueryForKind(itemName, kind);
+  const [ebay, amazon, walmart] = await Promise.all([
+    scrapeEbayPrice(query),
+    scrapeAmazonPrice(query),
+    scrapeWalmartPrice(query),
+  ]);
+
+  const referencePrice = await getReferencePrice(itemName, itemType);
+  const ratio = Number.isFinite(Number(ebayDealRatio)) ? Number(ebayDealRatio) : DEFAULT_EBAY_DEAL_RATIO;
+
+  const sourceCandidates = [amazon, walmart];
+
+  if (includeEbay && ebay.found && ebay.price != null) {
+    if (referencePrice == null || ebay.price <= referencePrice * ratio) {
+      sourceCandidates.push(ebay);
+    }
+  }
+
+  const sources = sourceCandidates.filter((source) => source.found && source.price != null);
+  return {
+    available: sources.length > 0,
+    sources,
+  };
+}
+
+async function runAlertChecks() {
+  if (alertCheckInProgress) return;
+  if (!alertSubscriptions.length) return;
+
+  alertCheckInProgress = true;
+  try {
+    for (const subscription of alertSubscriptions) {
+      try {
+        const availability = await fetchAvailability(
+          subscription.itemName,
+          subscription.itemType,
+          subscription.includeEbay,
+          subscription.ebayDealRatio
+        );
+
+        const wasAvailable = Boolean(subscription.lastAvailable);
+        subscription.lastAvailable = availability.available;
+        subscription.lastCheckedAt = new Date().toISOString();
+
+        if (!wasAvailable && availability.available) {
+          const sent = await sendAvailabilityEmail(subscription, availability);
+          if (sent) {
+            subscription.lastNotifiedAt = new Date().toISOString();
+          }
+        }
+      } catch (err) {
+        subscription.lastCheckedAt = new Date().toISOString();
+        subscription.lastError = err.message;
+      }
+    }
+
+    saveAlertSubscriptions();
+  } finally {
+    alertCheckInProgress = false;
+  }
+}
+
+function startAlertScheduler() {
+  const timer = setInterval(runAlertChecks, ALERT_CHECK_INTERVAL_MIN * 60 * 1000);
+  if (typeof timer.unref === 'function') timer.unref();
 }
 
 function uniqueOptions(list, getValue, getHint) {
@@ -448,7 +679,15 @@ app.get('/api/market-prices', async (req, res) => {
   const kind = String(req.query.kind || 'pack').toLowerCase();
   if (!name) return res.status(400).json({ error: 'Query parameter "name" is required' });
 
-  const suffix = kind === 'box' ? 'pokemon booster box' : 'pokemon booster pack';
+  if (!['card', 'pack', 'box'].includes(kind)) {
+    return res.status(400).json({ error: 'Query parameter "kind" must be card, pack, or box' });
+  }
+
+  const suffix = kind === 'box'
+    ? 'pokemon booster box'
+    : kind === 'pack'
+    ? 'pokemon booster pack'
+    : 'pokemon card';
   const query = `${name} ${suffix}`;
 
   const [ebay, amazon, walmart] = await Promise.all([
@@ -460,9 +699,101 @@ app.get('/api/market-prices', async (req, res) => {
   res.json({ query, sources: [ebay, amazon, walmart] });
 });
 
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+app.post('/api/alerts/subscribe', async (req, res) => {
+  const email = normalizeEmail(req.body && req.body.email);
+  const itemName = String((req.body && req.body.itemName) || '').trim();
+  const itemType = normalizeItemType(req.body && req.body.itemType);
+  const includeEbay = req.body && typeof req.body.includeEbay === 'boolean' ? req.body.includeEbay : true;
+  const ebayDealRatio = req.body && req.body.ebayDealRatio != null ? Number(req.body.ebayDealRatio) : DEFAULT_EBAY_DEAL_RATIO;
+
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: 'A valid email is required.' });
+  }
+  if (!itemName) {
+    return res.status(400).json({ error: 'itemName is required.' });
+  }
+  if (!itemType) {
+    return res.status(400).json({ error: 'itemType must be one of: cards, packcards, packs, boxes.' });
+  }
+  if (!Number.isFinite(ebayDealRatio) || ebayDealRatio <= 0 || ebayDealRatio > 2) {
+    return res.status(400).json({ error: 'ebayDealRatio must be a number between 0 and 2.' });
+  }
+
+  const duplicate = alertSubscriptions.find(
+    (sub) => sub.email === email && sub.itemName.toLowerCase() === itemName.toLowerCase() && sub.itemType === itemType
+  );
+  if (duplicate) {
+    return res.status(200).json({ subscription: duplicate, message: 'Subscription already exists.' });
+  }
+
+  const subscription = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    email,
+    itemName,
+    itemType,
+    includeEbay,
+    ebayDealRatio,
+    lastAvailable: false,
+    createdAt: new Date().toISOString(),
+    lastCheckedAt: null,
+    lastNotifiedAt: null,
+  };
+
+  try {
+    const availability = await fetchAvailability(itemName, itemType, includeEbay, ebayDealRatio);
+    subscription.lastAvailable = availability.available;
+    subscription.lastCheckedAt = new Date().toISOString();
+  } catch (_err) {
+    subscription.lastAvailable = false;
+  }
+
+  alertSubscriptions.push(subscription);
+  saveAlertSubscriptions();
+
+  return res.status(201).json({
+    subscription,
+    message: 'Subscription created. You will get an email when this item comes back online.',
+  });
 });
+
+app.get('/api/alerts/subscriptions', (req, res) => {
+  const email = normalizeEmail(req.query && req.query.email);
+  if (!email) {
+    return res.status(400).json({ error: 'Query parameter email is required.' });
+  }
+
+  const subscriptions = alertSubscriptions.filter((sub) => sub.email === email);
+  return res.json({ subscriptions });
+});
+
+app.delete('/api/alerts/subscriptions/:id', (req, res) => {
+  const id = String(req.params.id || '').trim();
+  const before = alertSubscriptions.length;
+  alertSubscriptions = alertSubscriptions.filter((sub) => sub.id !== id);
+
+  if (alertSubscriptions.length === before) {
+    return res.status(404).json({ error: 'Subscription not found.' });
+  }
+
+  saveAlertSubscriptions();
+  return res.json({ ok: true });
+});
+
+app.post('/api/alerts/check-now', async (_req, res) => {
+  await runAlertChecks();
+  return res.json({ ok: true, checkedAt: new Date().toISOString() });
+});
+
+app.get('/', (req, res) => {
+  if (!fs.existsSync(distIndex)) {
+    return res.status(200).send('Frontend build not found. Run "npm run build" for production, or "npm run dev" for development.');
+  }
+
+  return res.sendFile(distIndex);
+});
+
+loadAlertSubscriptions();
+startAlertScheduler();
 
 app.listen(PORT, () => {
   console.log(`Pokemon Card Pack Finder running on http://localhost:${PORT}`);

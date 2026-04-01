@@ -12,7 +12,69 @@ Optional:
 - Pokemon TCG API key for higher rate limits
 	- Set in terminal before start: `$env:POKEMON_TCG_API_KEY="your_api_key_here"`
 
-## Run (standard)
+## Email Restock Alerts
+
+The server now supports email alerts when watched items come back online for sale.
+
+Set these environment variables before start:
+
+- `SMTP_HOST` (for example `smtp.gmail.com`)
+- `SMTP_PORT` (for example `587`)
+- `SMTP_USER`
+- `SMTP_PASS`
+- Optional: `SMTP_SECURE=true` (usually `true` for 465, otherwise `false`)
+- Optional: `ALERT_FROM_EMAIL` (defaults to `SMTP_USER`)
+- Optional: `ALERT_CHECK_INTERVAL_MIN` (default `15`)
+- Optional: `ALERT_EBAY_DEAL_RATIO` (default `0.75`)
+
+Alert APIs:
+
+- `POST /api/alerts/subscribe`
+	- Body:
+	```json
+	{
+	  "email": "you@example.com",
+	  "itemName": "Charizard",
+	  "itemType": "cards",
+	  "includeEbay": true,
+	  "ebayDealRatio": 0.75
+	}
+	```
+- `GET /api/alerts/subscriptions?email=you@example.com`
+- `DELETE /api/alerts/subscriptions/:id`
+- `POST /api/alerts/check-now`
+
+eBay behavior:
+
+- eBay is only included in alerts when the found price is a strong deal relative to the configured ratio.
+
+## Run (development)
+
+Svelte frontend + Express API together:
+
+```powershell
+npm run dev
+```
+
+Open:
+
+- Frontend (Svelte): http://localhost:5173
+- API server (Express): http://localhost:3000
+
+## Run (production style)
+
+Build frontend and run Express serving `dist/`:
+
+```powershell
+npm run build
+npm start
+```
+
+Then open:
+
+- http://localhost:3000
+
+## Legacy direct server run
 
 Fastest one-liner to run the site:
 
@@ -20,9 +82,7 @@ Fastest one-liner to run the site:
 npm run site
 ```
 
-Then open:
-
-`http://localhost:3000`
+If no frontend build exists yet, run `npm run build` first.
 
 If this is your first time, install dependencies first:
 
@@ -35,22 +95,6 @@ Optional verification before starting:
 ```powershell
 npm test
 ```
-
-## Run (dynamic dev mode)
-
-For automatic server restart and browser reload when files change:
-
-```powershell
-npm run dev
-```
-
-Open:
-
-`http://localhost:3001`
-
-Notes:
-- Changes in `public/` reload automatically in the browser.
-- Changes in `server.js` trigger server restart automatically.
 
 ## Run (PowerShell + venv-safe)
 

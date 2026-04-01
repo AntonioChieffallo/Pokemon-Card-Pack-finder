@@ -1,0 +1,92 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "test-after-svelte-ui-pass",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test"
+			]
+		},
+		{
+			"label": "build-after-svelte-ui-pass",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			]
+		},
+		{
+			"label": "build-after-a11y-fix",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			]
+		},
+		{
+			"label": "build-after-suggestion-keyboard-nav",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			]
+		},
+		{
+			"label": "build-after-marketplace-prices-ui",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			]
+		},
+		{
+			"label": "test-after-live-scrape-enable",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test"
+			]
+		},
+		{
+			"label": "build-after-live-scrape-enable",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			]
+		},
+		{
+			"label": "install-nodemailer",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"install",
+				"nodemailer@^6.9.15"
+			]
+		},
+		{
+			"label": "test-after-email-alert-system",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"test"
+			]
+		},
+		{
+			"label": "build-after-email-alert-system",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			]
+		}
+	]
+}
