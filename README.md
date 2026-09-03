@@ -66,9 +66,10 @@ Open:
 Build frontend and run Express serving `dist/`:
 
 ```powershell
-npm run build
 npm start
 ```
+
+`npm start` installs dependencies only when they are missing, builds the frontend, and starts the server.
 
 Then open:
 

@@ -4,6 +4,7 @@
   "description": "This is to scrape the internet to see good prices, where to look, and click a link straight to the good stuff, if it is cards, packs, or boxes!",
   "main": "index.js",
   "scripts": {
+    "prestart": "node scripts/ensure-dependencies.js && npm run build",
     "start": "node server.js",
     "site": "node server.js",
     "test": "node tests/server.test.js",

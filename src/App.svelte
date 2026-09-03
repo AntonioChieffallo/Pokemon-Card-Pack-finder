@@ -17,6 +17,7 @@
   let visibleSuggestions = [];
   let suggestionsOpen = false;
   let activeSuggestionIndex = -1;
+  let suggestionNavigated = false;
 
   let selectedItem = null;
   let marketSources = [];
@@ -339,18 +340,16 @@
     const source = allSuggestions || [];
 
     if (!q) {
-      visibleSuggestions = source.slice(0, 8);
+      visibleSuggestions = source;
       activeSuggestionIndex = visibleSuggestions.length ? 0 : -1;
       return;
     }
 
-    visibleSuggestions = source
-      .filter((option) => {
-        const value = String(option.value || '').toLowerCase();
-        const hint = String(option.hint || '').toLowerCase();
-        return value.includes(q) || hint.includes(q);
-      })
-      .slice(0, 8);
+    visibleSuggestions = source.filter((option) => {
+      const value = String(option.value || '').toLowerCase();
+      const hint = String(option.hint || '').toLowerCase();
+      return value.includes(q) || hint.includes(q);
+    });
 
     activeSuggestionIndex = visibleSuggestions.length
       ? Math.min(Math.max(activeSuggestionIndex, 0), visibleSuggestions.length - 1)
@@ -361,6 +360,12 @@
     query = option.value;
     suggestionsOpen = false;
     activeSuggestionIndex = -1;
+    suggestionNavigated = false;
+  }
+
+  function openSuggestions() {
+    suggestionsOpen = true;
+    if (visibleSuggestions.length && activeSuggestionIndex < 0) activeSuggestionIndex = 0;
   }
 
   function onSuggestionKeydown(event) {
@@ -368,6 +373,7 @@
       if (event.key === 'ArrowDown') {
         suggestionsOpen = true;
         activeSuggestionIndex = 0;
+        suggestionNavigated = true;
       }
       return;
     }
@@ -375,16 +381,18 @@
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       activeSuggestionIndex = Math.min(activeSuggestionIndex + 1, visibleSuggestions.length - 1);
+      suggestionNavigated = true;
       return;
     }
 
     if (event.key === 'ArrowUp') {
       event.preventDefault();
       activeSuggestionIndex = Math.max(activeSuggestionIndex - 1, 0);
+      suggestionNavigated = true;
       return;
     }
 
-    if (event.key === 'Enter' && activeSuggestionIndex >= 0) {
+    if (event.key === 'Enter' && suggestionNavigated && activeSuggestionIndex >= 0) {
       event.preventDefault();
       selectSuggestion(visibleSuggestions[activeSuggestionIndex]);
       return;
@@ -394,6 +402,7 @@
       event.preventDefault();
       suggestionsOpen = false;
       activeSuggestionIndex = -1;
+      suggestionNavigated = false;
     }
   }
 
@@ -405,7 +414,7 @@
     results = [];
     suggestionsOpen = false;
     activeSuggestionIndex = -1;
-    await loadSuggestions(type);
+    suggestionNavigated = false;
   }
 
   async function onSearch(event) {
@@ -525,10 +534,22 @@
           bind:value={query}
           placeholder={placeholderFor(currentType)}
           on:focus={() => (suggestionsOpen = true)}
-          on:input={() => (suggestionsOpen = true)}
+          on:input={() => {
+            suggestionsOpen = true;
+            suggestionNavigated = false;
+          }}
           on:keydown={onSuggestionKeydown}
           required
         />
+        <button
+          type="button"
+          class="suggestions-toggle"
+          aria-label="Show available options"
+          aria-expanded={suggestionsOpen}
+          on:click={openSuggestions}
+        >
+          <span class="chevron" aria-hidden="true"></span>
+        </button>
 
         {#if suggestionsOpen && visibleSuggestions.length > 0}
           <div class="suggestions">
@@ -805,6 +826,16 @@
     backdrop-filter: blur(2px);
   }
 
+  .search-card {
+    position: relative;
+    z-index: 2;
+  }
+
+  .alerts-card {
+    position: relative;
+    z-index: 1;
+  }
+
   .chart,
   .alerts-card,
   .results {
@@ -975,6 +1006,39 @@
     color: #e2e8f0;
     padding: 0.7rem 0.9rem;
     box-sizing: border-box;
+    padding-right: 2.8rem;
+  }
+
+  .suggestions-toggle {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    width: 2rem;
+    height: 2rem;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: #cbd5e1;
+    cursor: pointer;
+  }
+
+  .suggestions-toggle:hover,
+  .suggestions-toggle[aria-expanded='true'] {
+    background: rgba(148, 163, 184, 0.14);
+  }
+
+  .chevron {
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(45deg) translateY(-2px);
+    transition: transform 120ms ease;
+  }
+
+  .suggestions-toggle[aria-expanded='true'] .chevron {
+    transform: rotate(225deg) translate(-1px, -1px);
   }
 
   .suggestions {
@@ -987,6 +1051,8 @@
     border-radius: 10px;
     background: #0a1020;
     overflow: hidden;
+    max-height: min(24rem, 60vh);
+    overflow-y: auto;
   }
 
   .suggestion {

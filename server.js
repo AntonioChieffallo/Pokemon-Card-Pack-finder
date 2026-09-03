@@ -15,11 +15,13 @@ const ALERTS_FILE = path.join(__dirname, 'alert-subscriptions.json');
 const ALERT_CHECK_INTERVAL_MIN = Math.max(1, Number(process.env.ALERT_CHECK_INTERVAL_MIN || 15));
 const DEFAULT_EBAY_DEAL_RATIO = Number(process.env.ALERT_EBAY_DEAL_RATIO || 0.75);
 const ALERT_FROM_EMAIL = process.env.ALERT_FROM_EMAIL || process.env.SMTP_USER || 'alerts@pokemon-card-pack-finder.local';
+const SUGGESTION_CACHE_TTL_MS = 10 * 60 * 1000;
 
 let alertSubscriptions = [];
 let alertCheckInProgress = false;
 let alertTransporter = null;
 let alertTransporterConfigured = false;
+const suggestionCache = new Map();
 
 app.use(cors());
 app.use(express.json());
@@ -31,6 +33,19 @@ function buildHeaders() {
   const headers = { 'Content-Type': 'application/json' };
   if (API_KEY) headers['X-Api-Key'] = API_KEY;
   return headers;
+}
+
+async function getCachedSuggestions(type, loader) {
+  const now = Date.now();
+  const cached = suggestionCache.get(type);
+  if (cached && cached.expiresAt > now) return cached.promise;
+
+  const promise = loader().catch((err) => {
+    suggestionCache.delete(type);
+    throw err;
+  });
+  suggestionCache.set(type, { promise, expiresAt: now + SUGGESTION_CACHE_TTL_MS });
+  return promise;
 }
 
 function loadAlertSubscriptions() {
@@ -145,9 +160,7 @@ async function getReferencePrice(itemName, itemType) {
         headers: buildHeaders(),
         params: {
           q: cardQuery,
-          orderBy: '-set.releaseDate',
           pageSize: 1,
-          select: 'tcgplayer',
         },
       });
 
@@ -418,9 +431,7 @@ app.get('/api/cards', async (req, res) => {
       headers: buildHeaders(),
       params: {
         q: cardQuery,
-        orderBy: '-set.releaseDate',
         pageSize: 10,
-        select: 'id,name,number,set,images,tcgplayer,rarity,supertype,subtypes',
       },
     });
 
@@ -463,7 +474,6 @@ app.get('/api/pack-cards', async (req, res) => {
         q: `set.id:${selectedSet.id}`,
         orderBy: 'number',
         pageSize: 200,
-        select: 'id,name,number,set,images,tcgplayer,rarity,supertype,subtypes',
       },
     });
 
@@ -634,38 +644,38 @@ app.get('/api/suggestions', async (req, res) => {
 
   try {
     if (type === 'cards') {
-      const response = await axios.get(`${POKEMON_TCG_API}/cards`, {
-        headers: buildHeaders(),
-        params: {
-          orderBy: '-set.releaseDate',
-          pageSize: 120,
-          select: 'name,set',
-        },
-      });
+      const options = await getCachedSuggestions(type, async () => {
+        const response = await axios.get(`${POKEMON_TCG_API}/cards`, {
+          headers: buildHeaders(),
+          params: { pageSize: 250 },
+        });
 
-      const options = uniqueOptions(
-        response.data.data,
-        (card) => card.name,
-        (card) => (card.set ? card.set.name : '')
-      );
+        return uniqueOptions(
+          response.data.data,
+          (card) => card.name,
+          (card) => (card.set ? card.set.name : '')
+        );
+      });
 
       return res.json({ options });
     }
 
-    const response = await axios.get(`${POKEMON_TCG_API}/sets`, {
-      headers: buildHeaders(),
-      params: {
-        orderBy: '-releaseDate',
-        pageSize: 200,
-        select: 'name,series',
-      },
-    });
+    const options = await getCachedSuggestions(type, async () => {
+      const response = await axios.get(`${POKEMON_TCG_API}/sets`, {
+        headers: buildHeaders(),
+        params: {
+          orderBy: '-releaseDate',
+          pageSize: 200,
+          select: 'name,series',
+        },
+      });
 
-    const options = uniqueOptions(
-      response.data.data,
-      (set) => set.name,
-      (set) => set.series || ''
-    );
+      return uniqueOptions(
+        response.data.data,
+        (set) => set.name,
+        (set) => set.series || ''
+      );
+    });
 
     return res.json({ options });
   } catch (err) {
